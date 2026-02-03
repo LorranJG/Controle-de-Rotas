@@ -21,6 +21,13 @@ let searchMarker = null;
 let baseStartMarker = null;
 let baseEndMarker = null;
 
+// Cache simples para evitar excesso de chamadas
+let routeCacheKey = "";
+let routeCache = {
+  km: 0,
+  geojson: null
+};
+
 // ---------- Utils ----------
 function uid() {
   return Math.random().toString(16).slice(2) + Date.now().toString(16);
@@ -61,7 +68,7 @@ function load() {
   }
 }
 
-// ---------- Distância ----------
+// ---------- Distância (fallback linha reta) ----------
 function haversineKm(a, b) {
   const R = 6371;
   const toRad = (deg) => deg * Math.PI / 180;
@@ -89,7 +96,8 @@ function stops() {
   ];
 }
 
-function totalKm() {
+// fallback linha reta (se OSRM falhar)
+function totalKmStraight() {
   const s = stops();
   if (s.length < 2) return 0;
   let sum = 0;
@@ -99,11 +107,53 @@ function totalKm() {
   return sum;
 }
 
-function litersNeeded() {
-  const km = totalKm();
-  const kmpl = Number(document.getElementById("kmpl")?.value || 0);
-  if (!kmpl || kmpl <= 0) return 0;
-  return km / kmpl;
+// ---------- ROTA REAL (OSRM) ----------
+function buildRouteKey() {
+  // key muda se mudar ordem/pontos
+  const s = stops();
+  return s.map(p => `${p.lat.toFixed(6)},${p.lng.toFixed(6)}`).join("|");
+}
+
+async function fetchOsrmRoute() {
+  const s = stops();
+  if (s.length < 2) return { km: 0, geojson: null };
+
+  // OSRM: coords = lon,lat;lon,lat;...
+  const coords = s.map(p => `${p.lng},${p.lat}`).join(";");
+
+  // geometries=geojson para desenhar; overview=full para rota completa
+  const url = `https://router.project-osrm.org/route/v1/driving/${coords}?overview=full&geometries=geojson`;
+
+  const res = await fetch(url, {
+    headers: { "Accept": "application/json" }
+  });
+
+  if (!res.ok) throw new Error("Falha OSRM");
+  const data = await res.json();
+
+  const meters = data?.routes?.[0]?.distance || 0;
+  const geojson = data?.routes?.[0]?.geometry || null;
+
+  return { km: meters / 1000, geojson };
+}
+
+async function getRoadRouteCached() {
+  const key = buildRouteKey();
+  if (key && key === routeCacheKey && routeCache.geojson) {
+    return routeCache;
+  }
+
+  routeCacheKey = key;
+
+  try {
+    const r = await fetchOsrmRoute();
+    routeCache = { km: r.km, geojson: r.geojson };
+    return routeCache;
+  } catch (e) {
+    console.warn("OSRM falhou, usando linha reta:", e);
+    routeCache = { km: totalKmStraight(), geojson: null };
+    return routeCache;
+  }
 }
 
 // ---------- Cidade / Geocoding ----------
@@ -178,15 +228,15 @@ async function searchPlace(query) {
 
 // ---------- Base GUARULHOS ----------
 async function initBase() {
-  // tenta carregar base "fixa" via geocode
   const place = await searchPlace(BASE_QUERY);
   if (!place) throw new Error("Não foi possível localizar a base GUARULHOS");
   base = { lat: place.lat, lng: place.lng, city: BASE_NAME };
 
-  // markers base (início e fim no mesmo ponto; deixo 2 markers com popups diferentes)
   if (baseStartMarker) map.removeLayer(baseStartMarker);
   if (baseEndMarker) map.removeLayer(baseEndMarker);
 
+  // Mantive dois markers como você tinha (sobrepostos), mas ok.
+  // Se quiser, dá pra deixar só 1.
   baseStartMarker = L.marker([base.lat, base.lng]).addTo(map).bindPopup(`Base Inicial (${BASE_NAME})`);
   baseEndMarker = L.marker([base.lat, base.lng]).addTo(map).bindPopup(`Base Final (${BASE_NAME})`);
 
@@ -194,14 +244,22 @@ async function initBase() {
 }
 
 // ---------- UI / Render ----------
-function updateSummary() {
-  const totalStops = stops().length;
-  document.getElementById("count").textContent = String(totalStops);
-  document.getElementById("km").textContent = totalKm().toFixed(2);
-  document.getElementById("liters").textContent = litersNeeded().toFixed(2);
+async function updateSummary() {
+  // Se você quer contar paradas totais (base + entregas + base):
+  // const totalStops = stops().length;
+
+  // Aqui, o mais comum é mostrar quantidade de ENTREGAS
+  document.getElementById("count").textContent = String(deliveries.length);
+
+  const road = await getRoadRouteCached();
+  document.getElementById("km").textContent = (road.km || 0).toFixed(2);
+
+  const kmpl = Number(document.getElementById("kmpl")?.value || 0);
+  const liters = (!kmpl || kmpl <= 0) ? 0 : (road.km / kmpl);
+  document.getElementById("liters").textContent = liters.toFixed(2);
 }
 
-function drawRouteLine() {
+async function drawRouteLine() {
   if (routeLine) {
     map.removeLayer(routeLine);
     routeLine = null;
@@ -210,12 +268,18 @@ function drawRouteLine() {
   const s = stops();
   if (s.length < 2) return;
 
-  const latlngs = s.map(d => [d.lat, d.lng]);
-  routeLine = L.polyline(latlngs).addTo(map);
+  const road = await getRoadRouteCached();
+
+  // Se tiver geojson, desenha rota real; senão desenha linha reta fallback
+  if (road.geojson) {
+    routeLine = L.geoJSON(road.geojson).addTo(map);
+  } else {
+    const latlngs = s.map(d => [d.lat, d.lng]);
+    routeLine = L.polyline(latlngs).addTo(map);
+  }
 }
 
 function syncMarkerTitles() {
-  // Entregas do meio
   deliveries.forEach((d, idx) => {
     const m = markers.get(d.id);
     if (m) {
@@ -229,7 +293,7 @@ function renderList() {
   const ol = document.getElementById("list");
   ol.innerHTML = "";
 
-  // Base inicial (fixa)
+  // Base inicial
   const liStart = document.createElement("li");
   liStart.className = "item";
   liStart.innerHTML = `
@@ -243,12 +307,12 @@ function renderList() {
   `;
   ol.appendChild(liStart);
 
-  // Entregas (reordenáveis)
+  // Entregas
   deliveries.forEach((d, idx) => {
     const li = document.createElement("li");
     li.className = "item";
     li.setAttribute("draggable", "true");
-    li.dataset.index = String(idx); // index dentro de deliveries
+    li.dataset.index = String(idx);
 
     li.innerHTML = `
       <div>
@@ -263,7 +327,7 @@ function renderList() {
     ol.appendChild(li);
   });
 
-  // Base final (fixa)
+  // Base final
   const liEnd = document.createElement("li");
   liEnd.className = "item";
   liEnd.innerHTML = `
@@ -277,7 +341,7 @@ function renderList() {
   `;
   ol.appendChild(liEnd);
 
-  // Botões (focus/remove)
+  // Botões
   ol.querySelectorAll("button").forEach(btn => {
     btn.addEventListener("click", () => {
       const id = btn.getAttribute("data-id");
@@ -288,19 +352,26 @@ function renderList() {
     });
   });
 
-  // Drag & drop apenas nos itens reordenáveis
+  // Drag & drop
   wireDragAndDrop(ol);
 
   syncMarkerTitles();
-  updateSummary();
-  drawRouteLine();
+
+  // Rota mudou: invalida cache (porque stops mudou)
+  routeCacheKey = "";
+
+  // Atualiza UI (async, sem travar render)
+  (async () => {
+    await updateSummary();
+    await drawRouteLine();
+  })();
+
   save();
 }
 
 function focusStop(id) {
   if (id === "BASE_START" || id === "BASE_END") {
     map.setView([base.lat, base.lng], Math.max(map.getZoom(), 12));
-    // abre popup do start/end se existir
     if (id === "BASE_START" && baseStartMarker) baseStartMarker.openPopup();
     if (id === "BASE_END" && baseEndMarker) baseEndMarker.openPopup();
     return;
@@ -365,6 +436,9 @@ function clearAll() {
     searchMarker = null;
   }
 
+  routeCacheKey = "";
+  routeCache = { km: 0, geojson: null };
+
   renderList();
 }
 
@@ -393,10 +467,12 @@ function wireDragAndDrop(ol) {
       dragIndex = null;
     });
 
-    li.addEventListener("dragover", (e) => {
+    li.addEventListener("dragover", (e) => reminds(e));
+
+    function reminds(e) {
       e.preventDefault();
       li.classList.add("drag-over");
-    });
+    }
 
     li.addEventListener("dragleave", () => {
       li.classList.remove("drag-over");
@@ -480,6 +556,7 @@ async function addBulk() {
       fail++;
     }
 
+    // respeita limites do Nominatim / evita spam
     await sleep(900);
   }
 
@@ -507,9 +584,12 @@ document.getElementById("btnBulkClear").addEventListener("click", () => {
 });
 
 document.getElementById("kmpl").addEventListener("input", () => {
-  // só recalcula e salva
-  updateSummary();
-  save();
+  // recalcula e salva (async sem travar)
+  (async () => {
+    routeCacheKey = "";
+    await updateSummary();
+    save();
+  })();
 });
 
 // Clique no mapa: adiciona entrega (no meio)
