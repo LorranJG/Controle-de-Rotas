@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="pt-br">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mapa de Entregas (OSM)</title>
+
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="./assets/css/style.css" />
+</head>
+<body>
+  <div class="topbar">
+    <button id="btnAdd">+ Adicionar entrega (centro)</button>
+    <button id="btnClear" class="danger">Limpar tudo</button>
+
+    <div class="search">
+      <input id="q" type="text" placeholder="Digite a região/endereço (ex: Campinas SP, Av Paulista 1000)"/>
+      <button id="btnSearch">Buscar</button>
+      <label class="addcheck">
+        <input type="checkbox" id="addAsDelivery" checked />
+        adicionar como entrega
+      </label>
+    </div>
+
+    <div class="fuel">
+      <div class="fuel-title">Combustível</div>
+      <div class="fuel-row">
+        <label for="kmpl">Média (km/L)</label>
+        <input id="kmpl" type="number" min="0.1" step="0.1" value="8" />
+      </div>
+      <div class="fuel-hint">Litros = KM total ÷ (km/L)</div>
+    </div>
+
+    <div class="summary">
+      <div class="summary-title">Resumo</div>
+      <div class="summary-values">
+        <span><strong id="count">0</strong> paradas</span>
+        <span>•</span>
+        <span><strong id="km">0.00</strong> km</span>
+        <span>•</span>
+        <span><strong id="liters">0.00</strong> L</span>
+      </div>
+      <div class="summary-hint">Rota: GUARULHOS → entregas → GUARULHOS</div>
+    </div>
+
+    <span class="hint">Dica: arraste a LISTA para mudar a ordem (base fica fixa).</span>
+  </div>
+
+  <div class="layout">
+    <div id="map"></div>
+
+    <aside class="panel">
+      <h3>Paradas</h3>
+
+      <div class="bulkbox">
+        <div class="bulk-title">Adicionar em lote (1 endereço por linha)</div>
+        <textarea id="bulkText" rows="5" placeholder="Ex:
+MOGI MIRIM
+RIBEIRAO PRETO
+PARANAVAI"></textarea>
+
+        <div class="bulk-actions">
+          <button id="btnBulkAdd">Adicionar em lote</button>
+          <button id="btnBulkClear" class="ghost">Limpar texto</button>
+        </div>
+
+        <div class="bulk-status" id="bulkStatus">Cole linhas e clique em “Adicionar em lote”.</div>
+      </div>
+
+      <ol id="list"></ol>
+
+      <div class="panel-footer">
+        <small>
+          ✅ Você pode reordenar apenas as entregas do meio. A base (GUARULHOS) é fixa no início e no fim.
+        </small>
+      </div>
+    </aside>
+  </div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="./assets/js/app.js"></script>
+</body>
+</html>
